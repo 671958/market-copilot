@@ -1687,6 +1687,9 @@ if saved_universe:
         "passare al successivo. Nessuna scansione automatica "
         "di tutte le borse è attiva."
     )
+    from finalizzazione import render_workspace
+render_workspace(history, calculate, fundamentals, parse_symbols)
+
 
 
 
