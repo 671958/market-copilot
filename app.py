@@ -523,4 +523,386 @@ with st.expander("Spiegami i segnali di un titolo", expanded=False):
 
             except Exception as exc:
                 st.error(f"Spiegazione non disponibile: {exc}")
+                st.divider()
+st.header("Ricerca aziende e monitor notizie")
+
+RESEARCH_LISTS = {
+    "Italia - campione iniziale": (
+        "ENEL.MI, ENI.MI, ISP.MI, UCG.MI, LDO.MI, "
+        "MONC.MI, PRY.MI, STM.MI, DIA.MI, AMPL.MI"
+    ),
+    "Europa - campione iniziale": (
+        "ASML.AS, SAP.DE, AIR.PA, SIE.DE, "
+        "DSY.PA, ASM.AS, BESI.AS, ADYEN.AS"
+    ),
+    "USA - campione iniziale": (
+        "MSFT, NVDA, AMD, PLTR, CRWD, NET, "
+        "DDOG, SNOW, SOFI, RKLB"
+    ),
+    "Lista personale": "",
+}
+
+st.caption(
+    "Campioni dimostrativi, non elenchi completi o raccomandazioni. "
+    "Non tutte queste aziende sono piccole, nuove o emergenti. "
+    "I simboli e i dati vengono verificati al momento della richiesta."
+)
+
+research_group = st.selectbox(
+    "Scegli la lista da usare",
+    list(RESEARCH_LISTS),
+    key="research_group_v2",
+)
+
+research_text = st.text_area(
+    "Modifica o aggiungi simboli separati da virgole",
+    value=RESEARCH_LISTS[research_group],
+    height=130,
+    key="research_symbols_" + research_group,
+)
+
+st.subheader("Filtri fondamentali")
+
+minimum_growth = st.number_input(
+    "Crescita minima ricavi, in percentuale",
+    min_value=-100.0,
+    max_value=1000.0,
+    value=10.0,
+    step=5.0,
+    key="research_min_growth",
+)
+
+positive_margin = st.checkbox(
+    "Richiedi margine operativo positivo",
+    value=True,
+    key="research_positive_margin",
+)
+
+st.caption(
+    "Un'azienda senza i dati richiesti viene indicata come incompleta, "
+    "non trattata come se avesse valori pari a zero. "
+    "Le soglie sono filtri di ricerca, non una strategia validata. "
+    "Non viene applicato un filtro di capitalizzazione perché le "
+    "valute di quotazione possono essere diverse."
+)
+
+if st.button("Cerca candidate nella lista", key="research_start_v2"):
+    research_symbols = parse_symbols(research_text)
+
+    if not research_symbols:
+        st.warning("Inserisci almeno un simbolo.")
+    elif len(research_symbols) > 20:
+        st.warning(
+            "Usa al massimo 20 simboli per ricerca per limitare "
+            "carico e richieste alla fonte gratuita."
+        )
+    else:
+        research_rows = []
+        research_errors = []
+        research_progress = st.progress(0)
+
+        for position, research_symbol in enumerate(research_symbols):
+            try:
+                research_info = fundamentals(research_symbol)
+                if not isinstance(research_info, dict) or not research_info:
+                    raise ValueError("Scheda fondamentale vuota")
+
+                growth_value = pct(research_info.get("revenueGrowth"))
+                margin_value = pct(research_info.get("operatingMargins"))
+
+                required_missing = []
+                if growth_value is None:
+                    required_missing.append("crescita ricavi")
+                if positive_margin and margin_value is None:
+                    required_missing.append("margine operativo")
+
+                if required_missing:
+                    filter_result = (
+                        "Dati incompleti: " + ", ".join(required_missing)
+                    )
+                elif growth_value < minimum_growth:
+                    filter_result = "Non supera filtro ricavi"
+                elif positive_margin and margin_value <= 0:
+                    filter_result = "Non supera filtro margine"
+                else:
+                    filter_result = "Supera i filtri"
+
+                research_row = {
+                    "Simbolo": research_symbol,
+                    "Nome": research_info.get("shortName", research_symbol),
+                    "Esito": filter_result,
+                    "Settore": research_info.get("sector", "Non disponibile"),
+                    "Paese società": research_info.get(
+                        "country", "Non disponibile"
+                    ),
+                    "Valuta quotazione": research_info.get("currency"),
+                    "Valuta bilancio": research_info.get("financialCurrency"),
+                    "Crescita ricavi %": growth_value,
+                    "Margine operativo %": margin_value,
+                    "P/E storico": finite(
+                        research_info.get("trailingPE")
+                    ),
+                    "Debt/equity del fornitore": finite(
+                        research_info.get("debtToEquity")
+                    ),
+                    "Capitalizzazione in valuta quotazione": finite(
+                        research_info.get("marketCap")
+                    ),
+                    "Flusso operativo in valuta bilancio": finite(
+                        research_info.get("operatingCashflow")
+                    ),
+                }
+
+                fiscal_timestamp = finite(
+                    research_info.get("mostRecentQuarter")
+                )
+                if fiscal_timestamp is not None:
+                    try:
+                        fiscal_label = datetime.fromtimestamp(
+                            fiscal_timestamp, tz=timezone.utc
+                        ).date().isoformat()
+                    except (ValueError, OverflowError, OSError):
+                        fiscal_label = "Non disponibile"
+                else:
+                    fiscal_label = "Non disponibile"
+
+                research_row[
+                    "Trimestre recente indicato dal fornitore"
+                ] = fiscal_label
+
+                try:
+                    research_technical = calculate(
+                        history(research_symbol)
+                    )
+                    research_row.update({
+                        "Ultima seduta": research_technical["Ultima seduta"],
+                        "Rendimento 63 sedute %": research_technical[
+                            "Rendimento 63 sedute %"
+                        ],
+                        "Debolezza tecnica /100": research_technical[
+                            "Debolezza tecnica /100"
+                        ],
+                        "Copertura tecnica": "Disponibile",
+                    })
+                except Exception as technical_error:
+                    research_row["Copertura tecnica"] = (
+                        "Non disponibile: " + str(technical_error)
+                    )
+
+                research_rows.append(research_row)
+
+            except Exception as research_error:
+                research_errors.append(
+                    f"{research_symbol}: {research_error}"
+                )
+
+            research_progress.progress(
+                (position + 1) / len(research_symbols)
+            )
+
+        st.session_state["research_result_v2"] = {
+            "rows": research_rows,
+            "errors": research_errors,
+            "requested": len(research_symbols),
+            "growth_threshold": minimum_growth,
+            "positive_margin": positive_margin,
+            "completed": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%d %H:%M UTC"
+            ),
+        }
+
+if "research_result_v2" in st.session_state:
+    saved_research = st.session_state["research_result_v2"]
+
+    st.caption(
+        "Ultima ricerca completata: "
+        + saved_research["completed"]
+        + ". È l'orario del calcolo, non di pubblicazione dei bilanci. "
+        "I risultati restano quelli dell'ultima ricerca avviata."
+    )
+
+    st.write(
+        "Filtri usati:",
+        f"crescita ricavi almeno {saved_research['growth_threshold']}%; "
+        f"margine positivo richiesto: "
+        f"{'sì' if saved_research['positive_margin'] else 'no'}.",
+    )
+
+    if saved_research["rows"]:
+        research_table = pd.DataFrame(saved_research["rows"])
+        candidate_table = research_table[
+            research_table["Esito"] == "Supera i filtri"
+        ].copy()
+
+        st.write(
+            f"Schede recuperate: {len(research_table)}/"
+            f"{saved_research['requested']}. "
+            f"Società che superano i filtri: {len(candidate_table)}."
+        )
+
+        if not candidate_table.empty:
+            st.subheader("Candidate da approfondire")
+            st.dataframe(
+                candidate_table,
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.info(
+                "Nessuna candidata con i filtri usati e i dati disponibili."
+            )
+
+        with st.expander("Tutti i risultati e i dati mancanti"):
+            st.dataframe(
+                research_table,
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        st.download_button(
+            "Esporta ricerca aziende",
+            research_table.to_csv(index=False).encode("utf-8-sig"),
+            file_name="ricerca_aziende.csv",
+            mime="text/csv",
+            key="research_export_v2",
+        )
+
+        st.caption(
+            "Il trimestre indicato non certifica il periodo di ogni campo: "
+            "ricavi, margini e multipli possono riferirsi a basi diverse. "
+            "Verifica bilanci ufficiali, diluizione delle azioni, "
+            "debito, concorrenza e valutazione. Superare questi filtri "
+            "non dimostra che un'azienda sia emergente o sottovalutata."
+        )
+
+    if saved_research["errors"]:
+        with st.expander("Società non analizzate ed errori"):
+            for research_message in saved_research["errors"]:
+                st.write(research_message)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def research_news_feed(query_text):
+    feed_url = (
+        "https://news.google.com/rss/search?q="
+        + quote(query_text)
+        + "&hl=it&gl=IT&ceid=IT:it"
+    )
+    feed_response = requests.get(
+        feed_url,
+        timeout=15,
+        headers={"User-Agent": "MarketCopilotPersonal/1.0"},
+    )
+    feed_response.raise_for_status()
+    feed_data = feedparser.parse(feed_response.content)
+
+    feed_rows = []
+    seen_links = set()
+
+    for entry in feed_data.entries:
+        entry_link = entry.get("link", "")
+        if not entry_link.startswith(("https://", "http://")):
+            continue
+        if entry_link in seen_links:
+            continue
+
+        seen_links.add(entry_link)
+        feed_source = entry.get("source", {})
+        feed_rows.append({
+            "title": entry.get("title", "Senza titolo"),
+            "source": feed_source.get("title", "Non indicata"),
+            "published": entry.get("published", "Data non disponibile"),
+            "link": entry_link,
+        })
+        if len(feed_rows) >= 12:
+            break
+
+    return {
+        "items": feed_rows,
+        "retrieved": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        ),
+    }
+
+
+st.divider()
+st.subheader("Monitor notizie pubbliche")
+
+st.write(
+    "Inserisci nomi di aziende o temi. Il monitor cerca titoli e "
+    "collegamenti, non legge integralmente gli articoli e non "
+    "verifica automaticamente le affermazioni."
+)
+
+monitor_query = st.text_input(
+    "Ricerca da monitorare",
+    value='("IPO" OR "quotazione" OR "nuovo finanziamento") when:7d',
+    key="research_monitor_query_v2",
+)
+
+monitor_enabled = st.checkbox(
+    "Attiva il controllo periodico delle notizie",
+    value=False,
+    key="research_monitor_enabled_v2",
+)
+
+monitor_seconds = st.selectbox(
+    "Intervallo di controllo, in secondi",
+    options=[60, 300, 900],
+    index=1,
+    key="research_monitor_seconds_v2",
+)
+
+st.caption(
+    "Consigliato: 300 secondi. Il controllo a 60 secondi non "
+    "garantisce notizie nuove ogni minuto. Funziona mentre la "
+    "sessione è attiva; non è un servizio di avvisi in background. "
+    "La ricerca può includere aziende non quotate, senza prezzi "
+    "o fondamentali disponibili nell'app."
+)
+
+
+@st.fragment(
+    run_every=monitor_seconds if monitor_enabled else None
+)
+def render_research_monitor():
+    if not monitor_enabled:
+        st.info("Monitor fermo. Attiva la casella per avviarlo.")
+        return
+
+    if not monitor_query.strip():
+        st.warning("Inserisci una ricerca.")
+        return
+
+    try:
+        result_feed = research_news_feed(monitor_query.strip())
+
+        st.caption(
+            "Ultima risposta recuperata dalla fonte: "
+            + result_feed["retrieved"]
+            + ". Non è l'orario di pubblicazione delle notizie."
+        )
+
+        if not result_feed["items"]:
+            st.info("Nessun risultato restituito dalla fonte.")
+
+        for monitor_item in result_feed["items"]:
+            st.write(monitor_item["title"])
+            st.caption(
+                monitor_item["source"]
+                + " | "
+                + monitor_item["published"]
+            )
+            st.link_button(
+                "Apri articolo",
+                monitor_item["link"],
+            )
+            st.divider()
+
+    except Exception as monitor_error:
+        st.error(f"Monitor temporaneamente non disponibile: {monitor_error}")
+
+
+render_research_monitor()
+
 
