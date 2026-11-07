@@ -391,3 +391,136 @@ st.caption(
     + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     + " — non è l'orario di aggiornamento delle quotazioni."
 )
+st.divider()
+
+with st.expander("Spiegami i segnali di un titolo", expanded=False):
+    st.write(
+        "Questo pannello spiega le regole tecniche del programma. "
+        "Non formula raccomandazioni di acquisto, vendita o short."
+    )
+
+    explanation_symbol = st.text_input(
+        "Simbolo da spiegare",
+        value="ENEL.MI",
+        key="explanation_symbol",
+    ).strip().upper()
+
+    if st.button("Genera spiegazione", key="explanation_button"):
+        if not explanation_symbol:
+            st.warning("Inserisci un simbolo.")
+        else:
+            try:
+                with st.spinner("Preparazione della spiegazione..."):
+                    explanation_data = history(explanation_symbol)
+                    explanation_result = calculate(explanation_data)
+
+                price = explanation_result["Prezzo rettificato"]
+                average50 = explanation_result["MA50"]
+                average200 = explanation_result["MA200"]
+                return21 = explanation_result["Rendimento 21 sedute %"]
+                return63 = explanation_result["Rendimento 63 sedute %"]
+                weakness = explanation_result["Debolezza tecnica /100"]
+                rsi_value = explanation_result["RSI semplice 14"]
+                volume_value = explanation_result[
+                    "Volume / media precedente 20"
+                ]
+
+                st.subheader(explanation_symbol)
+                st.write(
+                    "Seduta dei dati:",
+                    explanation_result["Ultima seduta"],
+                )
+                st.metric("Debolezza tecnica", f"{weakness}/100")
+                st.write(classify(weakness))
+
+                explanation_close = explanation_data["Close"]
+                exact_price = float(explanation_close.iloc[-1])
+                exact_ma50 = float(
+                    explanation_close.rolling(50).mean().iloc[-1]
+                )
+                exact_ma200 = float(
+                    explanation_close.rolling(200).mean().iloc[-1]
+                )
+                exact_return21 = (
+                    exact_price / float(explanation_close.iloc[-22]) - 1
+                ) * 100
+                exact_return63 = (
+                    exact_price / float(explanation_close.iloc[-64]) - 1
+                ) * 100
+
+                checks = [
+                    ("Prezzo sotto MA50", exact_price < exact_ma50),
+                    ("Prezzo sotto MA200", exact_price < exact_ma200),
+                    ("MA50 sotto MA200", exact_ma50 < exact_ma200),
+                    ("Rendimento 21 sedute negativo", exact_return21 < 0),
+                    ("Rendimento 63 sedute negativo", exact_return63 < 0),
+                ]
+
+                st.write("Da dove viene il punteggio:")
+                for label, active in checks:
+                    points = 20 if active else 0
+                    answer = "Sì" if active else "No"
+                    st.write(f"- {label}: {answer}. Punti: {points}.")
+
+                st.write("Lettura dei periodi:")
+                st.write(
+                    f"- Nelle ultime 21 sedute il rendimento "
+                    f"rettificato è {return21:+.2f}%."
+                )
+                st.write(
+                    f"- Nelle ultime 63 sedute il rendimento "
+                    f"rettificato è {return63:+.2f}%."
+                )
+
+                if exact_return21 > 0 and exact_return63 < 0:
+                    st.info(
+                        "Il periodo più recente è positivo, ma quello "
+                        "più lungo è negativo. È una divergenza tra "
+                        "orizzonti temporali, non una conferma "
+                        "automatica di inversione."
+                    )
+                elif exact_return21 < 0 and exact_return63 > 0:
+                    st.info(
+                        "Il periodo più recente è negativo, mentre "
+                        "quello più lungo resta positivo. I due "
+                        "orizzonti mostrano direzioni diverse."
+                    )
+                else:
+                    st.info(
+                        "Consulta insieme rendimenti e medie mobili: "
+                        "nessuna singola condizione basta per "
+                        "prevedere il prossimo movimento."
+                    )
+
+                st.write(
+                    f"RSI semplice 14: {rsi_value}. "
+                    "È mostrato come informazione aggiuntiva, "
+                    "ma non entra nel punteggio di debolezza."
+                )
+
+                if volume_value is not None:
+                    st.write(
+                        f"Volume dell'ultima seduta: "
+                        f"{volume_value:.2f} volte la media "
+                        "delle 20 sedute precedenti."
+                    )
+                else:
+                    st.write("Confronto dei volumi non disponibile.")
+
+                st.caption(
+                    "Prezzi e medie sono espressi nella valuta "
+                    "del titolo. I confronti usano valori non "
+                    "arrotondati. L'ultima barra può essere "
+                    "incompleta se il mercato è aperto."
+                )
+
+                st.warning(
+                    "Prima di una decisione restano da verificare "
+                    "bilanci, valutazione, notizie ufficiali, "
+                    "liquidità e rischi. Questo pannello non "
+                    "conferma la convenienza di un investimento."
+                )
+
+            except Exception as exc:
+                st.error(f"Spiegazione non disponibile: {exc}")
+
