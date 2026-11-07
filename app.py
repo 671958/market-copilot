@@ -1175,6 +1175,277 @@ else:
                     "Il modulo non verifica lo stato di una IPO "
                     "né classifica aziende private."
                 )
+                st.divider()
+st.header("Centro di controllo della selezione")
+
+st.caption(
+    "Diagnostica dell'ultima ricerca aziende. "
+    "I colori indicano lo stato dei filtri, non la convenienza "
+    "di un investimento."
+)
+
+dashboard_saved = st.session_state.get("research_result_v2")
+
+if not dashboard_saved or not dashboard_saved.get("rows"):
+    st.info(
+        "Esegui prima una ricerca nel pannello "
+        "'Ricerca aziende e monitor notizie'."
+    )
+else:
+    dashboard_currency = st.session_state.get("profile_currency_v3")
+    dashboard_min_cap = float(
+        st.session_state.get("profile_min_cap_v3", 100.0)
+    )
+    dashboard_max_cap = float(
+        st.session_state.get("profile_max_cap_v3", 10000.0)
+    )
+    dashboard_growth = float(
+        st.session_state.get("profile_min_growth_v3", 10.0)
+    )
+    dashboard_margin_mode = st.session_state.get(
+        "profile_margin_mode_v3",
+        "Tutti i margini disponibili",
+    )
+
+    if not dashboard_currency:
+        st.info(
+            "Scegli prima una valuta nel pannello "
+            "'Dimensione e profilo di crescita'."
+        )
+    elif dashboard_max_cap < dashboard_min_cap:
+        st.error(
+            "Correggi le soglie dimensionali: "
+            "il massimo deve essere almeno uguale al minimo."
+        )
+    else:
+        dashboard_rows = []
+
+        for source_row in dashboard_saved["rows"]:
+            symbol_value = source_row.get("Simbolo", "Non disponibile")
+            currency_value = source_row.get("Valuta quotazione")
+            cap_value = finite(
+                source_row.get("Capitalizzazione in valuta quotazione")
+            )
+            growth_value = finite(
+                source_row.get("Crescita ricavi %")
+            )
+            margin_value = finite(
+                source_row.get("Margine operativo %")
+            )
+
+            missing_reasons = []
+            failed_reasons = []
+
+            if not currency_value:
+                missing_reasons.append("valuta mancante")
+            elif currency_value != dashboard_currency:
+                failed_reasons.append("valuta diversa")
+
+            if cap_value is None or cap_value <= 0:
+                missing_reasons.append(
+                    "capitalizzazione mancante o non valida"
+                )
+            else:
+                if cap_value < dashboard_min_cap * 1_000_000:
+                    failed_reasons.append("sotto dimensione minima")
+                if cap_value > dashboard_max_cap * 1_000_000:
+                    failed_reasons.append("sopra dimensione massima")
+
+            if growth_value is None:
+                missing_reasons.append("crescita ricavi mancante")
+            elif growth_value < dashboard_growth:
+                failed_reasons.append("crescita sotto soglia")
+
+            if margin_value is None:
+                missing_reasons.append("margine operativo mancante")
+            elif (
+                dashboard_margin_mode
+                == "Solo margine operativo positivo"
+                and margin_value <= 0
+            ):
+                failed_reasons.append("margine non positivo")
+            elif (
+                dashboard_margin_mode
+                == "Solo margine operativo negativo"
+                and margin_value >= 0
+            ):
+                failed_reasons.append("margine non negativo")
+
+            if missing_reasons:
+                status_value = "Dati insufficienti"
+            elif failed_reasons:
+                status_value = "Non supera i filtri"
+            else:
+                status_value = "Supera i filtri"
+
+            all_reasons = missing_reasons + failed_reasons
+
+            dashboard_rows.append({
+                "Simbolo": symbol_value,
+                "Nome": source_row.get("Nome", symbol_value),
+                "Stato": status_value,
+                "Motivi": (
+                    "; ".join(all_reasons)
+                    if all_reasons
+                    else "Tutte le condizioni richieste sono soddisfatte"
+                ),
+                "Valuta": currency_value,
+                "Capitalizzazione milioni": (
+                    round(cap_value / 1_000_000, 2)
+                    if cap_value is not None
+                    else None
+                ),
+                "Crescita ricavi %": growth_value,
+                "Margine operativo %": margin_value,
+            })
+
+        dashboard_df = pd.DataFrame(dashboard_rows)
+
+        dashboard_passed = int(
+            (dashboard_df["Stato"] == "Supera i filtri").sum()
+        )
+        dashboard_failed = int(
+            (dashboard_df["Stato"] == "Non supera i filtri").sum()
+        )
+        dashboard_missing = int(
+            (dashboard_df["Stato"] == "Dati insufficienti").sum()
+        )
+
+        st.caption(
+            "Ricerca di riferimento: "
+            + dashboard_saved.get("completed", "Non disponibile")
+            + ". Le soglie sono quelle attualmente selezionate "
+            "nel pannello dimensionale."
+        )
+
+        st.write(
+            f"Valuta selezionata: {dashboard_currency}. "
+            f"Dimensione: {dashboard_min_cap:,.0f}–"
+            f"{dashboard_max_cap:,.0f} milioni. "
+            f"Crescita minima: {dashboard_growth:.1f}%. "
+            f"Profilo: {dashboard_margin_mode}."
+        )
+
+        count_col1, count_col2 = st.columns(2)
+        count_col1.metric("Schede disponibili", len(dashboard_df))
+        count_col2.metric("Superano i filtri", dashboard_passed)
+
+        count_col3, count_col4 = st.columns(2)
+        count_col3.metric("Non superano", dashboard_failed)
+        count_col4.metric("Dati insufficienti", dashboard_missing)
+
+        dashboard_fetch_errors = dashboard_saved.get("errors", [])
+        if dashboard_fetch_errors:
+            st.warning(
+                f"Altre {len(dashboard_fetch_errors)} richieste "
+                "hanno restituito errori: non sono incluse nei "
+                "conteggi delle schede disponibili."
+            )
+
+        if dashboard_passed:
+            st.success(
+                f"{dashboard_passed} società corrispondono "
+                "ai filtri. Sono candidate da studiare, "
+                "non segnali di acquisto."
+            )
+        else:
+            st.info(
+                "Nessuna corrispondenza. La tabella seguente "
+                "spiega perché, senza modificare le soglie."
+            )
+
+        def dashboard_status_style(value):
+            styles = {
+                "Supera i filtri": (
+                    "background-color: #123A32; color: #B5F5DB;"
+                ),
+                "Non supera i filtri": (
+                    "background-color: #3B2834; color: #FFD2DF;"
+                ),
+                "Dati insufficienti": (
+                    "background-color: #3A321B; color: #FFE7A3;"
+                ),
+            }
+            return styles.get(value, "")
+
+        dashboard_styled = dashboard_df.style.apply(
+            lambda column: column.map(dashboard_status_style),
+            subset=["Stato"],
+        )
+
+        st.subheader("Motivo per ogni azienda")
+        st.dataframe(
+            dashboard_styled,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        dashboard_same_currency = dashboard_df[
+            dashboard_df["Valuta"] == dashboard_currency
+        ].copy()
+
+        st.subheader("Grafici dei dati disponibili")
+        st.caption(
+            "Grafici limitati alla valuta selezionata. "
+            "Le barre non sono previsioni né classifiche "
+            "di qualità. Società senza il dato sono omesse."
+        )
+
+        growth_chart_df = dashboard_same_currency[
+            ["Simbolo", "Crescita ricavi %"]
+        ].dropna(subset=["Crescita ricavi %"])
+
+        if not growth_chart_df.empty:
+            st.write("Crescita ricavi riportata dal fornitore, in %")
+            st.bar_chart(
+                growth_chart_df.set_index("Simbolo"),
+                color="#38BDF8",
+            )
+
+        margin_chart_df = dashboard_same_currency[
+            ["Simbolo", "Margine operativo %"]
+        ].dropna(subset=["Margine operativo %"])
+
+        if not margin_chart_df.empty:
+            st.write("Margine operativo riportato dal fornitore, in %")
+            st.bar_chart(
+                margin_chart_df.set_index("Simbolo"),
+                color="#A78BFA",
+            )
+
+        cap_chart_df = dashboard_same_currency[
+            ["Simbolo", "Capitalizzazione milioni"]
+        ].dropna(subset=["Capitalizzazione milioni"])
+
+        cap_chart_df = cap_chart_df[
+            cap_chart_df["Capitalizzazione milioni"] > 0
+        ]
+
+        if not cap_chart_df.empty:
+            st.write(
+                "Capitalizzazione in milioni di "
+                + str(dashboard_currency)
+            )
+            st.bar_chart(
+                cap_chart_df.set_index("Simbolo"),
+                color="#94A3B8",
+            )
+
+        st.download_button(
+            "Esporta diagnosi completa",
+            dashboard_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name="diagnosi_selezione.csv",
+            mime="text/csv",
+            key="dashboard_diagnosis_export_v4",
+        )
+
+        st.caption(
+            "Dati insufficienti ha precedenza nello stato riepilogativo, "
+            "ma la colonna Motivi mostra anche le condizioni "
+            "già risultate negative. I periodi contabili possono "
+            "differire tra società e tra indicatori."
+        )
+
 
 
 
