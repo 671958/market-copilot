@@ -904,5 +904,277 @@ def render_research_monitor():
 
 
 render_research_monitor()
+st.divider()
+st.header("Dimensione e profilo di crescita")
+
+st.caption(
+    "Filtri sulle schede dell'ultima ricerca aziende. "
+    "Non esplora nuove società e non modifica i risultati precedenti. "
+    "Le soglie sono scelte di ricerca, non classificazioni ufficiali "
+    "né raccomandazioni di investimento."
+)
+
+if "research_result_v2" not in st.session_state:
+    st.info(
+        "Prima esegui 'Cerca candidate nella lista' "
+        "nel pannello Ricerca aziende."
+    )
+else:
+    profile_source = st.session_state["research_result_v2"]
+    profile_rows = profile_source.get("rows", [])
+
+    if not profile_rows:
+        st.warning("L'ultima ricerca non contiene schede utilizzabili.")
+    else:
+        profile_df = pd.DataFrame(profile_rows).copy()
+
+        profile_currency_col = "Valuta quotazione"
+        profile_cap_col = "Capitalizzazione in valuta quotazione"
+        profile_growth_col = "Crescita ricavi %"
+        profile_margin_col = "Margine operativo %"
+
+        for profile_column in [
+            profile_currency_col,
+            profile_cap_col,
+            profile_growth_col,
+            profile_margin_col,
+        ]:
+            if profile_column not in profile_df:
+                profile_df[profile_column] = None
+
+        profile_currencies = sorted({
+            str(value).strip()
+            for value in profile_df[profile_currency_col].dropna()
+            if str(value).strip()
+        })
+
+        if not profile_currencies:
+            st.warning(
+                "Valute di quotazione mancanti: "
+                "non posso applicare il filtro dimensionale."
+            )
+        else:
+            profile_currency = st.selectbox(
+                "Valuta di quotazione da analizzare",
+                options=profile_currencies,
+                key="profile_currency_v3",
+            )
+
+            st.write(
+                "Gli importi qui sotto sono in milioni di",
+                profile_currency,
+                "e sono confrontati con la capitalizzazione "
+                "riportata dal fornitore nella stessa valuta.",
+            )
+
+            profile_min_cap = st.number_input(
+                "Capitalizzazione minima, in milioni",
+                min_value=0.0,
+                value=100.0,
+                step=100.0,
+                key="profile_min_cap_v3",
+            )
+
+            profile_max_cap = st.number_input(
+                "Capitalizzazione massima, in milioni",
+                min_value=0.0,
+                value=10000.0,
+                step=500.0,
+                key="profile_max_cap_v3",
+            )
+
+            profile_min_growth = st.number_input(
+                "Crescita minima ricavi %",
+                min_value=-100.0,
+                max_value=1000.0,
+                value=10.0,
+                step=5.0,
+                key="profile_min_growth_v3",
+            )
+
+            profile_margin_mode = st.selectbox(
+                "Profilo operativo",
+                options=[
+                    "Tutti i margini disponibili",
+                    "Solo margine operativo positivo",
+                    "Solo margine operativo negativo",
+                ],
+                key="profile_margin_mode_v3",
+            )
+
+            st.caption(
+                "Esempio di fascia impostata: da 100 milioni "
+                "a 10 miliardi nella valuta selezionata. "
+                "Puoi cambiarla. Una capitalizzazione contenuta "
+                "non dimostra che un'azienda sia giovane o conveniente."
+            )
+
+            if profile_max_cap < profile_min_cap:
+                st.error(
+                    "La capitalizzazione massima deve essere "
+                    "almeno uguale alla minima."
+                )
+            else:
+                profile_same_currency = profile_df[
+                    profile_df[profile_currency_col] == profile_currency
+                ].copy()
+
+                for profile_column in [
+                    profile_cap_col,
+                    profile_growth_col,
+                    profile_margin_col,
+                ]:
+                    profile_same_currency[profile_column] = (
+                        pd.to_numeric(
+                            profile_same_currency[profile_column],
+                            errors="coerce",
+                        ).replace([np.inf, -np.inf], np.nan)
+                    )
+
+                profile_complete_mask = (
+                    profile_same_currency[
+                        [
+                            profile_cap_col,
+                            profile_growth_col,
+                            profile_margin_col,
+                        ]
+                    ].notna().all(axis=1)
+                    & (profile_same_currency[profile_cap_col] > 0)
+                )
+
+                profile_complete = profile_same_currency[
+                    profile_complete_mask
+                ].copy()
+
+                profile_incomplete = profile_same_currency[
+                    ~profile_complete_mask
+                ].copy()
+
+                profile_match_mask = (
+                    profile_complete[profile_cap_col].between(
+                        profile_min_cap * 1_000_000,
+                        profile_max_cap * 1_000_000,
+                        inclusive="both",
+                    )
+                    & (
+                        profile_complete[profile_growth_col]
+                        >= profile_min_growth
+                    )
+                )
+
+                if profile_margin_mode == "Solo margine operativo positivo":
+                    profile_match_mask &= (
+                        profile_complete[profile_margin_col] > 0
+                    )
+                elif profile_margin_mode == "Solo margine operativo negativo":
+                    profile_match_mask &= (
+                        profile_complete[profile_margin_col] < 0
+                    )
+
+                profile_matches = profile_complete[
+                    profile_match_mask
+                ].copy()
+
+                profile_matches[
+                    "Capitalizzazione in milioni"
+                ] = (
+                    profile_matches[profile_cap_col] / 1_000_000
+                ).round(2)
+
+                profile_matches["Profilo descrittivo"] = (
+                    profile_matches[profile_margin_col].apply(
+                        lambda margin: (
+                            "Margine operativo positivo"
+                            if margin > 0
+                            else (
+                                "Margine operativo negativo"
+                                if margin < 0
+                                else "Margine operativo nullo"
+                            )
+                        )
+                    )
+                )
+
+                profile_matches = profile_matches.sort_values(
+                    profile_growth_col,
+                    ascending=False,
+                )
+
+                st.caption(
+                    "Schede dell'ultima ricerca completata: "
+                    + profile_source.get("completed", "Orario non disponibile")
+                    + ". I filtri non aggiornano i dati alla fonte."
+                )
+
+                st.write(
+                    f"Schede totali: {len(profile_df)}. "
+                    f"Nella valuta selezionata: "
+                    f"{len(profile_same_currency)}. "
+                    f"Complete per questi filtri: "
+                    f"{len(profile_complete)}. "
+                    f"Corrispondenze: {len(profile_matches)}."
+                )
+
+                if profile_matches.empty:
+                    st.info(
+                        "Nessuna corrispondenza. Non è un errore: "
+                        "la lista può non contenere società "
+                        "con questo profilo."
+                    )
+                else:
+                    profile_display_columns = [
+                        column
+                        for column in [
+                            "Simbolo",
+                            "Nome",
+                            "Settore",
+                            profile_currency_col,
+                            "Capitalizzazione in milioni",
+                            profile_growth_col,
+                            profile_margin_col,
+                            "Profilo descrittivo",
+                            "Ultima seduta",
+                            "Copertura tecnica",
+                        ]
+                        if column in profile_matches.columns
+                    ]
+
+                    st.dataframe(
+                        profile_matches[profile_display_columns],
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+
+                    st.download_button(
+                        "Esporta selezione per profilo",
+                        profile_matches[
+                            profile_display_columns
+                        ].to_csv(index=False).encode("utf-8-sig"),
+                        file_name="selezione_profilo.csv",
+                        mime="text/csv",
+                        key="profile_export_v3",
+                    )
+
+                if not profile_incomplete.empty:
+                    with st.expander(
+                        "Schede escluse per dati mancanti "
+                        "o capitalizzazione non valida"
+                    ):
+                        st.dataframe(
+                            profile_incomplete,
+                            hide_index=True,
+                            use_container_width=True,
+                        )
+
+                st.warning(
+                    "Margine operativo positivo non significa "
+                    "necessariamente utile netto o cassa positivi. "
+                    "Crescita dei ricavi e dimensione non bastano: "
+                    "restano da verificare bilanci, periodo dei dati, "
+                    "diluizione, debito, liquidità e valutazione. "
+                    "Il modulo non verifica lo stato di una IPO "
+                    "né classifica aziende private."
+                )
+
 
 
