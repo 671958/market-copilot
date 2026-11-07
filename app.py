@@ -1445,6 +1445,249 @@ else:
             "già risultate negative. I periodi contabili possono "
             "differire tra società e tra indicatori."
         )
+        st.divider()
+st.header("Importa un universo di ricerca")
+
+st.caption(
+    "Carica una lista di simboli e analizzala per gruppi. "
+    "La provenienza è dichiarata dall'utente, non verificata "
+    "automaticamente. Importare un simbolo non conferma "
+    "che sia valido o che l'azienda sia quotata oggi."
+)
+
+with st.expander("Formato del CSV e istruzioni", expanded=False):
+    st.write(
+        "La prima riga deve contenere la colonna Simbolo. "
+        "Le altre colonne sono facoltative. "
+        "Usa i simboli compatibili con il fornitore dell'app."
+    )
+    st.code(
+        "Simbolo,Nome,Mercato\n"
+        "AAPL,Apple,USA\n"
+        "ENEL.MI,Enel,Italia\n"
+        "SAP.DE,SAP,Germania",
+        language="text",
+    )
+    st.caption(
+        "Questi tre simboli sono soltanto un esempio di formato, "
+        "non una lista di aziende emergenti."
+    )
+
+    st.download_button(
+        "Scarica modello CSV",
+        (
+            "Simbolo,Nome,Mercato\n"
+            "AAPL,Apple,USA\n"
+            "ENEL.MI,Enel,Italia\n"
+            "SAP.DE,SAP,Germania\n"
+        ).encode("utf-8-sig"),
+        file_name="modello_universo.csv",
+        mime="text/csv",
+        key="universe_template_v5",
+    )
+
+universe_source = st.text_input(
+    "Fonte dell'elenco: nome e, se disponibile, indirizzo",
+    placeholder="Esempio: elenco ufficiale della borsa consultato da me",
+    key="universe_source_v5",
+)
+
+universe_date = st.date_input(
+    "Data di riferimento dell'elenco",
+    value=datetime.now(timezone.utc).date(),
+    key="universe_date_v5",
+)
+
+universe_upload = st.file_uploader(
+    "Carica il CSV dei simboli",
+    type=["csv"],
+    key="universe_upload_v5",
+)
+
+if st.button("Controlla e importa elenco", key="universe_import_v5"):
+    if universe_upload is None:
+        st.warning("Scegli prima un file CSV.")
+    elif not universe_source.strip():
+        st.warning(
+            "Indica la provenienza dell'elenco. "
+            "Se è una lista personale, scrivi 'Lista personale'."
+        )
+    elif universe_date > datetime.now(timezone.utc).date():
+        st.warning("La data di riferimento non può essere futura.")
+    elif universe_upload.size > 2_000_000:
+        st.warning("Per questo modulo usa un CSV inferiore a 2 MB.")
+    else:
+        try:
+            universe_upload.seek(0)
+            imported_df = pd.read_csv(
+                universe_upload,
+                sep=None,
+                engine="python",
+                dtype=str,
+                encoding="utf-8-sig",
+                keep_default_na=False,
+            )
+
+            imported_df.columns = [
+                str(column).strip()
+                for column in imported_df.columns
+            ]
+
+            if "Simbolo" not in imported_df.columns:
+                raise ValueError(
+                    "Manca la colonna Simbolo. "
+                    "Rinomina la colonna dei ticker e riprova."
+                )
+
+            if len(imported_df) > 5000:
+                raise ValueError(
+                    "Massimo 5.000 righe per questa versione."
+                )
+
+            accepted_symbols = []
+            rejected_rows = []
+            seen_symbols = set()
+            duplicate_count = 0
+
+            for row_number, raw_symbol in enumerate(
+                imported_df["Simbolo"], start=2
+            ):
+                symbol = str(raw_symbol).strip().upper()
+
+                if not symbol:
+                    rejected_rows.append({
+                        "Riga CSV": row_number,
+                        "Valore": "",
+                        "Motivo": "Simbolo vuoto",
+                    })
+                    continue
+
+                if not re.fullmatch(
+                    r"[A-Z0-9^][A-Z0-9.^=\-]{0,24}", symbol
+                ):
+                    rejected_rows.append({
+                        "Riga CSV": row_number,
+                        "Valore": symbol,
+                        "Motivo": (
+                            "Formato non supportato: "
+                            "controllare il simbolo del fornitore"
+                        ),
+                    })
+                    continue
+
+                if symbol in seen_symbols:
+                    duplicate_count += 1
+                    continue
+
+                seen_symbols.add(symbol)
+                accepted_symbols.append(symbol)
+
+            if not accepted_symbols:
+                raise ValueError(
+                    "Nessun simbolo con formato accettabile."
+                )
+
+            st.session_state["universe_imported_v5"] = {
+                "symbols": accepted_symbols,
+                "source": universe_source.strip(),
+                "reference_date": universe_date.isoformat(),
+                "imported_at": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%d %H:%M UTC"
+                ),
+                "duplicates": duplicate_count,
+                "rejected": rejected_rows,
+            }
+
+            st.success(
+                "Elenco importato. Il controllo ha verificato "
+                "solo il formato, non l'esistenza dei titoli."
+            )
+
+        except Exception as import_error:
+            st.error(f"Importazione non riuscita: {import_error}")
+
+saved_universe = st.session_state.get("universe_imported_v5")
+
+if saved_universe:
+    st.write("Fonte dichiarata:", saved_universe["source"])
+    st.write(
+        "Data di riferimento:",
+        saved_universe["reference_date"],
+    )
+    st.caption(
+        "Importazione: "
+        + saved_universe["imported_at"]
+        + ". L'elenco non viene aggiornato automaticamente."
+    )
+
+    universe_count = len(saved_universe["symbols"])
+    universe_batches = [
+        saved_universe["symbols"][start:start + 20]
+        for start in range(0, universe_count, 20)
+    ]
+
+    universe_col1, universe_col2 = st.columns(2)
+    universe_col1.metric("Simboli importati", universe_count)
+    universe_col2.metric("Gruppi da analizzare", len(universe_batches))
+
+    st.caption(
+        f"Duplicati rimossi: {saved_universe['duplicates']}. "
+        f"Righe scartate: {len(saved_universe['rejected'])}."
+    )
+
+    selected_batch_index = st.selectbox(
+        "Scegli un gruppo",
+        options=list(range(len(universe_batches))),
+        format_func=lambda index: (
+            f"Gruppo {index + 1} — "
+            f"{len(universe_batches[index])} simboli"
+        ),
+        key="universe_batch_v5_" + str(universe_count),
+    )
+
+    selected_batch_text = ", ".join(
+        universe_batches[selected_batch_index]
+    )
+
+    st.write("Simboli del gruppo selezionato:")
+    st.code(selected_batch_text, language="text")
+
+    st.info(
+        "Copia questi simboli. Torna a 'Ricerca aziende', "
+        "scegli 'Lista personale', incollali nel campo e premi "
+        "'Cerca candidate nella lista'. "
+        "L'importazione da sola non esegue lo screening."
+    )
+
+    st.download_button(
+        "Esporta elenco pulito",
+        pd.DataFrame({
+            "Simbolo": saved_universe["symbols"],
+            "Fonte dichiarata": saved_universe["source"],
+            "Data riferimento": saved_universe["reference_date"],
+        }).to_csv(index=False).encode("utf-8-sig"),
+        file_name="universo_pulito.csv",
+        mime="text/csv",
+        key="universe_clean_export_v5",
+    )
+
+    if saved_universe["rejected"]:
+        with st.expander("Righe da correggere"):
+            st.dataframe(
+                pd.DataFrame(saved_universe["rejected"]),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+    st.warning(
+        "L'elenco importato resta nella sessione corrente: "
+        "conserva il CSV per poterlo ricaricare. "
+        "Le ricerche successive sostituiscono i risultati "
+        "della precedente: esporta ogni gruppo prima di "
+        "passare al successivo. Nessuna scansione automatica "
+        "di tutte le borse è attiva."
+    )
+
 
 
 
